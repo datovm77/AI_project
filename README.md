@@ -70,14 +70,14 @@ Bash
 
 ```
 # 克隆项目
-git clone https://github.com/your-username/ai-coding-mentor.git
-cd ai-coding-mentor
+git clone https://github.com/datovm77/AI_project.git
+cd AI_project
 
 # 安装依赖
 pip install -r requirements.txt
 ```
 
-*(依赖包含：`streamlit`, `openai`, `aiohttp`, `requests`, `pdfplumber`, `python-docx`, `Pillow`, `python-dotenv`)*
+*(依赖包含：`streamlit`, `openai`, `aiohttp`, `requests`, `pdfplumber`, `python-docx`, `Pillow`, `python-dotenv`等)*
 
 ### 2. 配置 API 密钥
 
@@ -118,11 +118,22 @@ streamlit run agent1.0.py
 
 主入口，利用 `asyncio.gather` 实现了 Reviewer 和 Architect 的并行工作，极大地减少了用户等待时间。
 
+### 调用模型
+```c
+MODEL_CONFIG = {
+    "librarian": "google/gemini-3-flash-preview", 
+    "reviewer": "google/gemini-3-flash-preview",
+    "architect": "google/gemini-3-flash-preview",
+    "mentor": "anthropic/claude-opus-4.5"          
+}
+```
+
 ## 待办事项 (To-Do)
 
 - [ ] 添加历史周报的数据库存储 (SQLite/Supabase)。
 - [ ] 支持更多格式的文件解析 (如 `.csv`, `.xlsx`)。
-- [ ] 增加 "一键生成下周学习计划" 功能。
+- [ ] 增加 “多轮对话” 功能。
+- [ ] 增加 “模型联网” 功能。
 
 ## 贡献
 
