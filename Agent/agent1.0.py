@@ -1,5 +1,6 @@
 import streamlit as st
 import asyncio
+import nest_asyncio
 import os
 import json
 import base64
@@ -19,6 +20,7 @@ except ImportError:
 # 1. ⚙️ 配置与初始化
 # ==========================================
 load_dotenv()  #导入secrets
+nest_asyncio.apply()  # 允许嵌套事件循环
 
 PROFILE_PATH = "profile.txt"
 HISTORY_PATH = "history.json"
@@ -53,38 +55,47 @@ def parse_uploaded_file(uploaded_file) -> Dict[str, Any]:
     """
     [核心工具] 通用文件解析工厂。
     输入: Streamlit 上传文件对象
-    输出: 字典 {'filename':..., 'type': 'code'/'document'/'image', 'content':...}
+    输出: 字典 {'filename':..., 'type': 'code'/'document'/'image'/'error', 'content':...}
     """
     file_type = uploaded_file.name.split('.')[-1].lower()
     result = {
-        "filename":uploaded_file.name,
-        "type":"unknow",
-        "content":""
+        "filename": uploaded_file.name,
+        "type": "unknown",
+        "content": ""
     }
-    text = ""
+
     try:
         if file_type == 'pdf':
             with pdfplumber.open(uploaded_file) as pdf:
-                for page in pdf.pages: 
-                    text += page.text + '\n'
+                text_parts = []
+                for page in pdf.pages:
+                    page_text = page.extract_text()
+                    if page_text:  # ✅ 检查是否为 None
+                        text_parts.append(page_text)
+                text = '\n'.join(text_parts)
             result["type"] = "document"
-            result["content"] = text    
+            result["content"] = text if text else "[PDF 无法提取文本，可能是扫描版]"
+
         elif file_type == 'docx':
             doc = docx.Document(uploaded_file)
-            for para in doc.paragraphs: text += para.text + "\n"
+            text = "\n".join(para.text for para in doc.paragraphs)
             result["type"] = "document"
             result["content"] = text
-        elif file_type in ['txt', 'c', 'cpp', 'py', 'java', 'md']:
+
+        elif file_type in ['txt', 'c', 'cpp', 'py', 'java', 'md', 'js', 'ts', 'go', 'rs']:
             text = uploaded_file.read().decode("utf-8", errors='ignore')
             result["type"] = "code"
             result["content"] = text
-        elif file_type in ['png', 'jpg', 'jpeg']:
+
+        elif file_type in ['png', 'jpg', 'jpeg', 'gif', 'webp']:
             bytes_data = uploaded_file.getvalue()
-            text = encode_image_to_base64(bytes_data)
             result["type"] = "image"
-            result["content"] = text
+            result["content"] = encode_image_to_base64(bytes_data)
+
     except Exception as e:
-        return f"[读取出错: {str(e)}]"
+        result["type"] = "error"
+        result["content"] = f"读取文件 {uploaded_file.name} 时出错: {str(e)}"
+
     return result
 
 
@@ -233,14 +244,18 @@ async def agent_librarian_write(code_list: List[str]) -> str:
     #     raw_code_content = raw_code_content[:50000] + "\n...(代码过长已截断)..."
 
     system_prompt = """
-    你是一位极具洞察力的“技术档案管理员”。
-    你的任务是根据【旧档案】和用户本周提交的【原始代码】，**推断**用户的技术成长，并生成一份**更新后的档案**。
+    【任务指令】
+    根据提供的[旧档案]与[本周原始代码]，全量生成一份[更新后的技术档案]。
 
-    【更新逻辑】：
-    1. **技能捕获**：不要听用户说什么，要看代码里用了什么。发现了新的库(Library)、新的语法特性或设计模式吗？加入技能树。
-    2. **代码品味**：观察代码风格。是有详尽注释、模块化良好？还是充满了硬编码和意大利面条代码？据此调整“代码质量”或“弱点”字段。
-    3. **动态评级**：如果代码逻辑复杂且优雅，升级评价(S/A/B/C)；如果全是低价水平，保持或降级。
-    4. **只输出档案**：直接输出更新后的完整档案内容（Markdown格式），不需要任何开场白。
+    【处理逻辑】
+    1. **技能提取 (基于事实)**：扫描代码中实际使用的库 (Libraries)、框架、语法特性及设计模式。若发现新技能，将其合并不重复地加入技能树。
+    2. **质量画像更新**：分析代码的工程质量（注释规范、命名风格、模块化程度、硬编码情况）。据此客观修正“代码风格”与“当前弱点”字段。
+    3. **动态评级**：依据本周代码的逻辑复杂度与健壮性，动态调整综合技术评级 (S/A/B/C)。
+    4. **录入删减规则**：不得随意删减旧档案内容。档案的内容重复时，根据情况可以对档案做出适当修改。
+    【输出约束】
+    1. 格式必须为 Markdown。
+    2. **严禁输出**任何开场白、解释语或结束语。
+    3. **直接输出**完整的档案内容。
     """
     
     user_content = f"【当前旧档案】:\n{old_profile}\n\n【本周原始代码堆 (Raw Code Data)】:\n{raw_code_content}"
@@ -274,29 +289,27 @@ async def agent_reviewer(context: Dict) -> AsyncGenerator[str, None]:
     """
 
     system_prompt = """
-    你是一位拥有10年经验的**高级代码审计员 (Code Reviewer)**。
-    你的工作风格是：严谨、犀利、关注细节，绝不放过任何一个安全隐患。
+    【任务指令】
+    对用户提供的[代码片段]及[运行截图]执行安全与健壮性审计。
 
-    【任务目标】
-    请仔细阅读用户提供的【代码片段】以及可能的【报错截图/运行截图】，生成一份审计报告。
+    【执行逻辑】
+    1. **视觉诊断 **：若包含图片（报错/运行截图），优先解析错误信息，并定位代码中的具体致错行。
+    2. **安全扫描**：检测关键漏洞（SQL注入、XSS、硬编码密钥、敏感数据泄露、越权访问）。
+    3. **健壮性评估**：识别运行时风险（空指针、未捕获异常、死循环、资源未关闭、语法错误）。
+    4. **代码异味**：指出不可读命名、魔法数字、冗余逻辑或反模式写法。
 
-    【关注重点】
-    1. **安全性 (Security)**：是否存在 SQL 注入、XSS、硬编码密钥、敏感信息泄露等风险？
-    2. **健壮性 (Robustness)**：是否存在未捕获的异常、空指针引用、死循环风险？
-    3. **Bug 分析 (Diagnostics)**：如果输入包含图片（报错截图），请优先分析报错原因，并指出代码中对应的错误行。
-    4. **代码异味 (Code Smells)**：是否存在命名混乱、魔法数字、冗余逻辑？
+    【输出格式】
+    必须使用 Markdown 格式，仅包含以下板块（若某板块无内容则省略）：
+    - **🔴 致命问题**：(会导致崩溃或严重安全漏洞的问题)
+    - **🟡 改进建议**：(性能优化、逻辑简化、代码规范)
+    - **📸 截图分析**：(针对图片中报错信息的简要技术解读)
+    - **💡 修复代码**：(仅针对最严重问题提供最小化修复片段)
 
-    【输出格式要求】
-    请使用 Markdown 格式，结构如下：
-    - **🔴 致命问题**：(会导致崩溃或严重安全漏洞的问题，无则不写)
-    - **🟡 改进建议**：(性能优化、逻辑简化)
-    - **📸 截图分析**：(如果有图片，简述报错含义；无图片则忽略此项)
-    - **💡 修复代码片段**：(仅针对最严重的问题给出简短的修复示例)
-
-    请保持客观冷静，直接切入技术点，不要说废话。
+    【风格约束】
+    客观、直接、技术导向。严禁输出寒暄语。
     """
     code_snippets = context.get('code',[])
-    image_list = context.get('image',[])
+    image_list = context.get('images',[])
 
     full_code_text = "\n\n".join(code_snippets)
     if len(full_code_text) > 30000:
@@ -360,26 +373,23 @@ async def agent_architect(context: Dict) -> AsyncGenerator[str, None]:
         return
     
     system_prompt = """
-    你是一位眼光长远的**首席技术架构师 (Chief Architect)**。
-    你的工作风格是：宏观、战略性、注重代码的可维护性和设计美感。
-    你需要结合用户的【旧档案 (Old Profile)】和【本周代码】，评估其技术成长。
+    【指令目标】
+    基于用户[旧档案]与[本周代码/文档]，执行宏观架构评估与技术成长判定。忽略具体语法错误，专注代码的可维护性、设计逻辑、技术上限与运行效率（重点）。
 
-    【任务目标】
-    1. **设计模式识别**：代码中是否使用了面向对象设计、函数式编程、或特定的设计模式（单例、工厂、观察者等）？
-    2. **复杂度评估**：代码是简单的脚本堆砌，还是具有模块化、分层架构？(S/A/B/C 评级)。
-    3. **成长性对比 (关键)**：
-    - 对比【旧档案】中的技能水平，本周的代码是否有突破？
-    - 用户是在重复造轮子（停滞），还是在尝试新技术（成长）？
-    4. **技术栈分析**：识别代码中用到的关键库或框架。
+    【执行步骤】
+    1. **架构分析**：提取代码的结构模式（如分层、模块化程度）。识别是否应用了特定设计模式（OOP、FP、单例、工厂等），是否优化了运行效率，评估架构性能。
+    2. **成长比对**：将本周代码的技术深度与[旧档案]进行对比。
+    - 判定状态：**突破**（应用了新概念/新技术）、**巩固**（熟练度提升）或 **停滞**（重复低水平劳动）。
+    3. **技术栈提取**：罗列代码中使用的核心框架、第三方库或中间件。
+    4. **综合定级**：根据代码的工程复杂度与设计美感或者运行效率，给出 S/A/B/C 评级。
 
-    【输出格式要求】
-    请使用 Markdown 格式，结构如下：
-    - **🏗️ 架构视点**：(评价代码结构、模块化程度)
-    - **📈 成长评估**：(明确指出相比旧档案，本周是"突破"、"巩固"还是"停滞")
+    【输出格式】
+    严格遵循 Markdown 格式，仅输出以下四个板块：
+
+    - **🏗️ 架构或性能视点**：(简述代码结构、模块划分及运行效率)
+    - **📈 成长评估**：(明确指出与旧档案相比的进步点，判定本周状态)
     - **🛠️ 技术栈侦测**：(列出检测到的关键技术/库)
-    - **⚖️ 综合评级**：给出本周代码的综合评分 (S/A/B/C) 并简述理由。
-
-    请不要纠结于具体的语法错误（那是审计员的事），你要关注的是“代码的品味”和“开发者的上限”。
+    - **⚖️ 综合评级**：(给出 S/A/B/C 评分并简述理由)
     """
     user_content = f"【当前旧档案】:\n{old_profile}\n\n【本周原始代码堆】:\n{full_code_text} \n\n【本周文档内容】:\n{full_doc_text}"
 
@@ -400,24 +410,25 @@ async def agent_mentor(review_res: str, architect_res: str, user_note: str,conte
     """
     code_snippets = context.get('code', [])
     system_prompt = """
-    你是一位**技术导师 (Tech Mentor)**，你的学生刚提交了本周的代码。
-    你手头有两份技术报告：
-    1. **代码审计员 (Reviewer)**：指出了具体的 Bug 和安全隐患。
-    2. **架构师 (Architect)**：评估了设计模式和技术成长。
-    3. **学生心得 (User Note)**：学生自己写的本周感悟。
-    4. **学生原始代码**:学生本周写的代码
-    【任务目标】
-    请你用**耐心专业**的口吻，写一份《本周成长周报》。
+    【指令目标】
+    基于[代码审计报告]、[架构评估报告]、[学生心得]及[学生源代码]，撰写一份综合性的《本周成长周报》。需整合多方信息，提炼核心观点，避免单纯复述，要求知识密度高。
 
-    【内容结构】
-    1. **本周高光 (Highlights)**：结合架构师的评价，表扬做得好的地方。
-    2. **核心改进 (Focus Area)**：综合审计员的报告，指出下周最需要集中精力解决的 1-2 个坏习惯或技术短板。
-    3. **错误说明 (show mistake)** 综合架构师与审计师（主）与自己对代码的理解（辅），指出所有（所有）的错误。
-    3. **答疑解惑 (Q&A)**：如果学生的【学习心得】里提出了问题或困惑，请简要解答；如果没有，则忽略此项。
-    4. **下周挑战 (Next Step)**：根据当前水平，布置几个专项训练（可以是题目或者是某一个知识点）或推荐一个学习关键词。
+    【执行逻辑】
+    1. **提炼高光 (Highlights)**：依据架构评估，识别代码中的设计亮点、模式应用或相对于旧档案的技术突破。
+    2. **聚焦改进 (Focus Area)**：从审计报告中筛选出优先级高的 2-3 个问题（如严重安全漏洞、核心逻辑谬误或恶劣的编码习惯），作为本周整改重点。
+    3. **全量纠错 (Error Analysis)**：综合审计员与架构师的发现，并结合你对原始代码的审查，罗列代码中存在的逻辑错误与技术误区。
+    4. **答疑 (Q&A)**：若[学生心得]中包含具体技术困惑或提问，提供简明解答；若无提问，则跳过此步骤。
+    5. **规划下一步 (Next Step)**：针对本周暴露的短板，布置具体的专项训练题目或推荐一个核心学习关键词。
 
-    请避免直接的重复前两份报告的内容，而是要提炼核心观点，找出所有可能的错误，转化为易于消化的建议。
+    【输出格式】
+    严格遵循 Markdown 格式，语气专业且具有指导性，包含以下板块：
+    - ** 本周高光**
+    - ** 核心改进**
+    - ** 错误清单** (指出所有具体错误，列出用户错误的代码与修正后的代码（根据情况提供多种解法）)(主要部分，要求输出长，尽量贴近输出上限)
+    - ** 答疑解惑** (若无问题则省略)
+    - ** 自身强化** (给出用户下一周可以去学习的部分，比如去看...知识点，去刷...的题目)
     """
+
     user_content = user_content = f"""
     【学生心得】: {user_note}
     
@@ -436,33 +447,23 @@ async def agent_mentor(review_res: str, architect_res: str, user_note: str,conte
         async for chunk in call_ai_chat(model,system_prompt,user_content):
             yield chunk
     except Exception as e:
-        yield f"[Mentor 运行出错]: {str(e)}"
+        error_msg = f"\n\n[Architect 运行出错]: {str(e)}"        
+        print(error_msg)
+        yield error_msg
 
 
 # ==========================================
 # 4. 主工作流控制 (Workflow)
 # ==========================================
 
-async def run_weekly_analysis(uploaded_files, user_note, current_profile):
-    """
-    主控函数
-    """
-    # TODO:
-    # Step 1: await agent_librarian(...) -> 得到 structured_context
-    # Step 2: asyncio.gather(agent_reviewer(...), agent_architect(...)) -> 并发获取两份报告
-    # Step 3: await agent_mentor(...) -> 得到最终周报
-    # Return: final_report
+# async def run_weekly_analysis(uploaded_files, user_note, current_profile):
+
     
-
-
-# ==========================================
-# 5. UI 入口 (Main)
-# ==========================================
-
 def main():
+    # 1. 必须最先执行配置
     st.set_page_config(page_title="AI Coding Mentor", layout="wide", page_icon="🧙‍♂️")
     
-    # --- CSS 样式优化 (可选) ---
+    # 2. CSS 样式优化
     st.markdown("""
     <style>
     .stTextArea textarea { font-size: 16px; }
@@ -470,151 +471,166 @@ def main():
     </style>
     """, unsafe_allow_html=True)
 
+    # 3. 初始化 Session State (防止刷新丢失)
+    if "analysis_result" not in st.session_state:
+        st.session_state.analysis_result = None  
 
+    # --- 侧边栏 ---
     with st.sidebar:
-        st.header("你的个人档案")
-        
-        # 实时读取档案
-        current_profile_content = "暂无档案"
+        st.header("🧙‍♂️ 个人档案")
         if os.path.exists(PROFILE_PATH):
             with open(PROFILE_PATH, "r", encoding="utf-8") as f:
-                current_profile_content = f.read()
-            st.info(current_profile_content)
+                st.info(f.read())
         else:
-            st.warning("欢迎新人！完成第一次周报分析后将自动生成档案。")
+            st.warning("暂无档案，请先进行一次周报分析。")
 
         st.divider()
-        with st.expander("历史记录管理"):
-            st.caption(f"存储路径: `{HISTORY_PATH}`")
-            if st.button("清除所有历史 & 档案"):
-                if os.path.exists(PROFILE_PATH): os.remove(PROFILE_PATH)
-                if os.path.exists(HISTORY_PATH): os.remove(HISTORY_PATH)
-                st.success("重置成功！")
-                st.rerun()
+        if st.button("🗑️ 清除所有数据"):
+            if os.path.exists(PROFILE_PATH): os.remove(PROFILE_PATH)
+            if os.path.exists(HISTORY_PATH): os.remove(HISTORY_PATH)
+            st.session_state.analysis_result = None
+            st.rerun()
 
     # --- 主界面 ---
-    st.title("AI Coding Mentor ")
-    st.markdown("### 你的私人技术成长顾问团队")
-    st.caption("上传本周代码，AI 团队将并行工作：Librarian 整理档案 -> Reviewer 审计代码 -> Architect 评估架构 -> Mentor 生成周报")
+    st.title("AI Coding Mentor")
+    st.caption("你的私人技术成长顾问团队")
 
-    # --- 1. 输入区域 ---
-    col_input, col_note = st.columns([1, 1])
-    with col_input:
-        uploaded_files = st.file_uploader("1. 上传代码文件 (支持 .py, .java, .cpp, .pdf, 图片等)", accept_multiple_files=True)
-    with col_note:
-        user_note = st.text_area("2. 本周心得 / 遇到的困难", height=150, placeholder="例如：这周深入学习了异步编程，但在错误处理上还有点懵...")
+    # 使用 Tabs 分离工作台与历史
+    tab_analysis, tab_history = st.tabs(["🚀 本周分析", "📜 历史档案"])
 
-    # --- 2. 执行逻辑 ---
-    if st.button("启动周报分析", type="primary", use_container_width=True):
-        if not uploaded_files:
-            st.error("请先上传至少一个文件！")
-            return
-        
-        # --- UI 布局准备 ---
+    # ==========================
+    # Tab 1: 分析工作台
+    # ==========================
+    with tab_analysis:
+        col_input, col_note = st.columns([1, 1])
+        with col_input:
+            uploaded_files = st.file_uploader("1. 上传代码/文档", accept_multiple_files=True)
+        with col_note:
+            user_note = st.text_area("2. 本周心得", height=100, placeholder="例如：这周主要学习了...")
+
+        start_btn = st.button("启动周报分析", type="primary", use_container_width=True)
         st.divider()
-        status_container = st.status("AI 团队集结中...", expanded=True)
-        
-        # 创建两列用于并行展示技术分析
+
+        # 预先定义布局容器（防止UI跳动）
         st.subheader("第一阶段：深度技术评估")
         col_review, col_arch = st.columns(2)
-        
         with col_review:
-            st.markdown("#### 代码审计报告 (Reviewer)")
-            reviewer_box = st.container(height=500, border=True)
-            reviewer_placeholder = reviewer_box.empty()
-            
+            st.markdown("#### 代码审计 (Reviewer)")
+            # 使用 container 固定高度，美观
+            review_box = st.container(height=500, border=True)
+            review_placeholder = review_box.empty()
+        
         with col_arch:
-            st.markdown("#### 架构评估报告 (Architect)")
-            architect_box = st.container(height=500, border=True)
-            architect_placeholder = architect_box.empty()
+            st.markdown("#### 架构评估 (Architect)")
+            arch_box = st.container(height=500, border=True)
+            arch_placeholder = arch_box.empty()
 
-        st.subheader("第二阶段：导师总结周报 (Mentor)")
+        st.subheader("第二阶段：导师总结 (Mentor)")
         mentor_box = st.container(border=True)
         mentor_placeholder = mentor_box.empty()
 
-        # --- 核心异步流程 (这就是原本的 run_weekly_analysis) ---
-        async def run_loop():
+        # --- 核心逻辑 A: 点击运行 ---
+        if start_btn:
+            if not uploaded_files:
+                st.error("⚠️ 请先上传文件！")
+            else:
+                # 使用 st.status 显示进度状态
+                with st.status("🔥 AI 团队正在并行工作中...", expanded=True) as status:
+                    
+                    async def run_async_logic():
+                        try:
+                            # 1. Librarian
+                            st.write("Librarian: 正在整理文件并更新档案...")
+                            context, _ = await agent_librarian(uploaded_files)
+                            await agent_librarian_write(context['code']) # 后台更新档案
+
+                            # 2. Reviewer & Architect 并行
+                            st.write("Reviewer & Architect: 正在分析代码...")
+                            
+                            # 临时存储结果用于显示
+                            results = {"review": "", "arch": "", "mentor": ""}
+
+                            # 定义流式回调
+                            async def stream_review():
+                                async for chunk in agent_reviewer(context):
+                                    results["review"] += chunk
+                                    review_placeholder.markdown(results["review"] + "▌")
+                                review_placeholder.markdown(results["review"])
+
+                            async def stream_arch():
+                                async for chunk in agent_architect(context):
+                                    results["arch"] += chunk
+                                    arch_placeholder.markdown(results["arch"] + "▌")
+                                arch_placeholder.markdown(results["arch"])
+
+                            await asyncio.gather(stream_review(), stream_arch())
+
+                            # 3. Mentor
+                            st.write("Mentor: 正在撰写周报...")
+                            async for chunk in agent_mentor(results["review"], results["arch"], user_note, context):
+                                results["mentor"] += chunk
+                                mentor_placeholder.markdown(results["mentor"] + "▌")
+                            mentor_placeholder.markdown(results["mentor"])
+
+                            # 4. 保存状态与文件
+                            st.session_state.analysis_result = results
+                            
+                            new_record = {
+                                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "note": user_note,
+                                **results 
+                            }
+                            
+                            history = []
+                            if os.path.exists(HISTORY_PATH):
+                                try:
+                                    with open(HISTORY_PATH, "r", encoding="utf-8") as f:
+                                        history = json.load(f)
+                                except: pass
+                            
+                            history.append(new_record)
+                            with open(HISTORY_PATH, "w", encoding="utf-8") as f:
+                                json.dump(history, f, ensure_ascii=False, indent=2)
+
+                            status.update(label="✅ 分析完成！已归档", state="complete", expanded=False)
+                            st.balloons()
+                            
+                        except Exception as e:
+                            st.error(f"运行出错: {e}")
+
+                    
+                    asyncio.run(run_async_logic())
+
+        # --- 核心逻辑 B: 回填旧数据 (防止刷新白屏) ---
+        elif st.session_state.analysis_result:
+            res = st.session_state.analysis_result
+            review_placeholder.markdown(res["review"])
+            arch_placeholder.markdown(res["arch"])
+            mentor_placeholder.markdown(res["mentor"])
+
+    # ==========================
+    # Tab 2: 历史档案
+    # ==========================
+    with tab_history:
+        if not os.path.exists(HISTORY_PATH):
+            st.info("📭 暂无历史记录")
+        else:
             try:
-                # Step 1: Librarian 整理文件
-                status_container.write("Librarian: 正在解析并分类上传的文件...")
-                context, _ = await agent_librarian(uploaded_files)
+                with open(HISTORY_PATH, "r", encoding="utf-8") as f:
+                    data = json.load(f)
                 
-                # Step 2: Librarian 更新档案 (后台静默更新)
-                status_container.write("Librarian: 正在对比历史档案并更新能力树...")
-                # 注意：这里我们让它并行跑，还是阻塞跑？为了后续 Architect 能读到最新对比，建议先跑完，或 Architect 读旧的。
-                # 逻辑选择：Architect 读旧档案做对比更有意义（对比上周 vs 本周）。
-                # 所以我们让 Profile 更新在后台进行，或者最后进行。这里选择先计算出新 Profile 内容备用。
-                _ = await agent_librarian_write(context['code']) 
-                status_container.write("档案已更新 (Architect 将基于旧档案对比成长)")
-
-                # Step 3: 并行执行 Reviewer 和 Architect
-                status_container.write("Reviewer & Architect: 正在并行分析代码...")
-                
-                # 定义用于流式更新 UI 的内部函数
-                reviewer_res = ""
-                architect_res = ""
-
-                async def stream_reviewer():
-                    nonlocal reviewer_res
-                    async for chunk in agent_reviewer(context):
-                        reviewer_res += chunk
-                        reviewer_placeholder.markdown(reviewer_res + "▌")
-                    reviewer_placeholder.markdown(reviewer_res) # 结束时去掉光标
-
-                async def stream_architect():
-                    nonlocal architect_res
-                    async for chunk in agent_architect(context):
-                        architect_res += chunk
-                        architect_placeholder.markdown(architect_res + "▌")
-                    architect_placeholder.markdown(architect_res)
-
-                # 并发启动！
-                await asyncio.gather(stream_reviewer(), stream_architect())
-
-                # Step 4: Mentor 汇总
-                status_container.write(" Mentor: 正在阅读技术报告并撰写周报...")
-                mentor_res = ""
-                async for chunk in agent_mentor(reviewer_res, architect_res, user_note, context):
-                    mentor_res += chunk
-                    mentor_placeholder.markdown(mentor_res + "▌")
-                mentor_placeholder.markdown(mentor_res)
-
-                # Step 5: 完成与存档
-                status_container.update(label="本周分析已完成！", state="complete", expanded=False)
-                
-                # 保存历史
-                new_record = {
-                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "note": user_note,
-                    "review": reviewer_res,
-                    "architecture": architect_res,
-                    "mentor": mentor_res
-                }
-                
-                history_list = []
-                if os.path.exists(HISTORY_PATH):
-                    try:
-                        with open(HISTORY_PATH, "r", encoding="utf-8") as f:
-                            history_list = json.load(f)
-                    except: pass
-                
-                history_list.append(new_record)
-                with open(HISTORY_PATH, "w", encoding="utf-8") as f:
-                    json.dump(history_list, f, ensure_ascii=False, indent=2)
-
-                st.balloons()
-                st.toast("周报已保存至 history.json", icon="💾")
-                
-                # 延迟刷新以显示最新的 Profile
-                await asyncio.sleep(3)
-                st.rerun()
-
+                # 倒序遍历（最新的在最前）
+                for idx, item in enumerate(reversed(data)):
+                    ts = item.get('timestamp', 'Unknown')
+                    note = item.get('note', '')[:30]
+                    
+                    with st.expander(f"📅 {ts} | 心得: {note}...", expanded=(idx==0)):
+                        t1, t2, t3 = st.tabs(["导师周报", "代码审计", "架构评估"])
+                        with t1: st.markdown(item.get('mentor', ''))
+                        with t2: st.markdown(item.get('review', ''))
+                        with t3: st.markdown(item.get('arch', ''))
             except Exception as e:
-                st.error(f"运行过程中发生错误: {str(e)}")
-                print(e)
-
-        # 启动异步循环
-        asyncio.run(run_loop())
+                st.error(f"历史记录读取失败: {e}")
 
 if __name__ == "__main__":
     main()

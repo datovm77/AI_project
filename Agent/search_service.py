@@ -102,7 +102,7 @@ def search_for_keyword(query:str):
         'Content-Type': 'application/json'
     }
 
-    response = requests.request("POST", url, headers=headers, data=payload)
+    response = requests.request("POST", url, headers=headers, data=payload,timeout=(5,30))
     search_data = response.json()
     result = []
     BLOCKED_SITES = []
@@ -158,4 +158,4 @@ def search_for_keyword(query:str):
         print("未找到搜索结果")
 
 if __name__ == "__main__":
-    search_for_keyword()
+    search_for_keyword("插入排序代码")

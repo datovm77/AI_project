@@ -4,3 +4,4 @@ python-dotenv
 pdfplumber
 python-docx
 duckduckgo-search
+nest_asyncio
