@@ -33,6 +33,7 @@ venv.bak/
 
 # --- 环境变量与密钥 (非常重要！！！) ---
 # AI Agent 通常需要 OpenAI/Anthropic 的 API Key，绝不能提交到仓库
+.streamlit/
 .env
 .env.local
 .env.*
