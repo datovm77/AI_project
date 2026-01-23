@@ -87,7 +87,7 @@ pip install -r requirements.txt
 # OpenRouter 或 OpenAI 的 Key（用于主模型）
 API_KEY = "sk-or-v1-xxxxxxxxxxxxxxxx"
 
-# Serper.dev 的 Key（用于联网搜索）
+# Serper.dev 的 Key（用于联网搜索/非必要）
 API_SEARCH = "xxxxxxxxxxxxxxxx"
 ```
 
