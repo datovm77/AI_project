@@ -96,8 +96,4 @@ datasets/
 raw_data/
 history.json
 profile.txt
-testt/app_fix.py
-testt/app.py
-testt/mixture1.0.py
-.gitignore
-testt/tesst.py
+testt/
