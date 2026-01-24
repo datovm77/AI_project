@@ -31,7 +31,7 @@ client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=st.secrets["API_KEY"] 
 )
-MODEL_NAME = "openai/gpt-oss-120b"
+MODEL_NAME = "x-ai/grok-4.1-fast"
 
 def ai_extract_json(content, url, max_retries=2):
     """
@@ -76,7 +76,7 @@ def ai_extract_json(content, url, max_retries=2):
                 ],
                 response_format={"type": "json_object"}, 
                 temperature=0.1, 
-                timeout=45 # AI 响应超时
+                timeout=45 
             )
             
             raw_content = response.choices[0].message.content
@@ -262,7 +262,7 @@ def search_for_keyword(query:str):
         "q": query,
         "gl": "cn",
         "hl": "zh-cn",
-        "num": 5  # 搜索结果数量
+        "num": 3  # 搜索结果数量
     })
     
     headers = {
@@ -308,5 +308,5 @@ def search_for_keyword(query:str):
 # python search_service.py
 if __name__ == "__main__":
     # 测试代码
-    res = search_for_keyword("快速排序怎么写")
+    res = search_for_keyword("C语言 螺旋矩阵与Z字形遍历 算法")
     print(json.dumps(res, indent=2, ensure_ascii=False))

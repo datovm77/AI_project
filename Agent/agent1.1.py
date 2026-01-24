@@ -1,6 +1,5 @@
 import streamlit as st
 import asyncio
-import nest_asyncio
 import os
 import json
 import base64
@@ -15,12 +14,12 @@ try:
 except ImportError:
     st.error("找不到 search_service.py，请确保该文件在同一目录下。")
 
-# streamlit run agent1.0.py
+# streamlit run agent1.1.py
 # ==========================================
 # 1. ⚙️ 配置与初始化
 # ==========================================
 load_dotenv()  #导入secrets
-nest_asyncio.apply()  # 允许嵌套事件循环
+# nest_asyncio.apply()  # 允许嵌套事件循环
 
 PROFILE_PATH = "profile.txt"
 HISTORY_PATH = "history.json"
@@ -135,7 +134,7 @@ async def search_web_tool(query: str) -> str:
             if code_snippets:
                 formatted_report += "相关代码片段:\n"
                 for code in code_snippets:
-                    formatted_report += f"```\n{code[:500]}...\n```\n"
+                    formatted_report += f"```\n{code[:1500]}...\n```\n"
             
             formatted_report += "\n"
 
@@ -284,59 +283,118 @@ async def agent_librarian_write(code_list: List[str]) -> str:
 async def agent_reviewer(context: Dict) -> AsyncGenerator[str, None]:
     """
     [Reviewer - 代码审计员]
-    职责：安全审计、Bug 查找、报错分析。
-    【多模态需求】：高 (需要看报错截图)
+    架构升级：Planner (生成搜索词) -> Executor (并行搜索) -> Generator (流式产出)
     """
+    code_snippets = context.get('code',[])
+    image_list = context.get('images',[])
+    full_code_text = "\n\n".join(code_snippets)
+    if len(full_code_text) > 30000:
+        full_code_text = full_code_text[:30000] + "\n\n(代码过长，后续部分已截断...)"
+    if not full_code_text and not image_list:
+        yield "[审计员]：未检测到有效代码或截图，无法执行审计。"
+        return
+    yield "🤔 **[AI 思考中]** 正在分析代码技术栈，规划搜索路径...\n\n"
+
+    planner_prompt = """
+    你是一个技术审计规划师。请分析用户的代码，提取出总共 3 个最重要的的最新的技术关键词或知识点，用于后续的联网搜索以获取相关资料。
+    
+    【搜索目的】
+    1. 查找代码所用框架（如 Streamlit, LangChain, PyTorch 等）的最新**官方文档**。
+    2. 查找针对当前代码逻辑的**最佳学习内容**或**最新标准写法**。
+    3. 查找与代码难度或者知识点匹配的**练习题**（LeetCode/Kaggle/GitHub）。
+
+    【输出格式】
+    必须且仅输出一个 Python 列表格式的字符串(加上明显的后缀，如"题目" "官方文档")，例如：
+    ["Streamlit 官方文档", "Python asyncio 题目", "RAG system GitHub项目"]
+    """
+    planner_model = MODEL_CONFIG["reviewer"]
+    search_queries = []
+
+    try:
+        # 这里我们不流式，直接拿到完整结果
+        planner_response = ""
+        async for chunk in call_ai_chat(planner_model, planner_prompt, f"【代码内容】:\n{full_code_text[:10000]}"):
+            planner_response += chunk
+        
+        # 清洗并解析 JSON
+        clean_json = planner_response.replace("```json", "").replace("```", "").strip()
+        search_queries = json.loads(clean_json)
+        
+        # 容错：如果 AI 返回的不是列表，强制转为列表
+        if not isinstance(search_queries, list):
+            search_queries = [str(search_queries)]
+            
+    except Exception as e:
+        # 降级策略：如果规划失败，使用默认词
+        print(f"[Planner Error]: {e}")
+        search_queries = ["本周最佳GitHub开源项目"]
+
+
+    #开始调用联网搜索工具
+    search_results_context = ""
+    if search_queries:
+        # 实时反馈给用户正在搜什么
+        yield f"🌐 **[联网检索]** 正在并行搜索权威资料：\n"
+        for q in search_queries:
+            yield f"- *检索：{q}*\n"
+        yield "\n"
+
+        # 并行执行搜索任务 (使用 asyncio.gather 提速)
+        try:
+            tasks = [search_web_tool(query) for query in search_queries]
+            results = await asyncio.gather(*tasks)
+            search_results_context = "\n\n".join(results)
+        except Exception as e:
+            search_results_context = f"搜索过程发生错误: {str(e)}"
+
+    yield "📝 **[生成报告]** 资料检索完毕，正在撰写深度审计报告...\n\n---\n\n"
 
     system_prompt = """
-    【任务指令】
-    对用户提供的[代码片段]及[运行截图]执行安全与健壮性审计。
+    【任务定义】
+    依据提供的[代码片段]、[运行截图]及前序步骤获取的[联网参考资料]，撰写严格的代码审计报告。
 
-    【执行逻辑】
+    【输入说明】
+    1. **待审计代码**：用户的原始代码。
+    2. **联网参考资料**：系统已提前检索到的官方文档、最佳实践或练习题数据，这不是用户的数据，这是联网所得数据。
+
+    【执行流程】
     1. **视觉诊断 **：若包含图片（报错/运行截图），优先解析错误信息，并定位代码中的具体致错行。
     2. **安全扫描**：检测关键漏洞（SQL注入、XSS、硬编码密钥、敏感数据泄露、越权访问）。
     3. **健壮性评估**：识别运行时风险（空指针、未捕获异常、死循环、资源未关闭、语法错误）。
     4. **代码异味**：指出不可读命名、魔法数字、冗余逻辑或反模式写法。
+    2. **资料整合**：
+    - **验证**：利用[联网参考资料]校验代码中的API用法或者其它较新甚至陌生的写法是否过时或错误。
+    - **推荐**：从[联网参考资料]中提取适合当前代码水平的**练习题链接**或**官方文档链接**。
 
-    【输出格式】
-    必须使用 Markdown 格式，仅包含以下板块（若某板块无内容则省略）：
-    - **🔴 致命问题**：(会导致崩溃或严重安全漏洞的问题)
-    - **🟡 改进建议**：(性能优化、逻辑简化、代码规范)
-    - **📸 截图分析**：(针对图片中报错信息的简要技术解读)
-    - **💡 修复代码**：(仅针对最严重问题提供最小化修复片段)
+    【输出板块】(Markdown)
+    仅包含以下板块（无内容则省略）：
+    - **🔴 致命问题**：导致崩溃或严重安全隐患的错误。
+    - **🟡 改进建议**：性能优化、逻辑简化与代码规范。
+    - **📸 截图分析**：针对报错截图的技术解读。
+    - **💡 修复代码**：针对严重问题的最小化修复方案。
+    - **📚 扩展与参考**：**强制**在此处罗列[联网参考资料]中提供的核心链接（如官方文档URL、练习题URL），然后再补充其中遗漏的知识点文档链接。
 
     【风格约束】
-    客观、直接、技术导向。严禁输出寒暄语。
+    客观、直接。严禁忽略提供的[联网参考资料]，严禁输出寒暄语。
     """
-    code_snippets = context.get('code',[])
-    image_list = context.get('images',[])
 
-    full_code_text = "\n\n".join(code_snippets)
-    if len(full_code_text) > 30000:
-        full_code_text = full_code_text[:30000] + "\n\n(代码过长，后续部分已截断...)"
+    user_content_for_review = f"""
+    【待审计代码】:
+    {full_code_text}
 
-    if not full_code_text and not image_list:
-        yield"[审计员]：没有代码文本与截图，本周内容无"
-        return
-    
-    user_content = f"【待处理代码:】:\n{full_code_text}"
-    if not full_code_text:
-        user_content = "【代码内容】: (无文本，仅分析提供的截图)"
-
-    model = MODEL_CONFIG["reviewer"]
-
+    【联网参考资料 (非审计内容，为参考内容)】:
+    {search_results_context}
+    """
+    model = MODEL_CONFIG["reviewer"] 
     try:
-        async for chunk in call_ai_chat(model,system_prompt,user_content,image_base64_list=image_list):
+        async for chunk in call_ai_chat(model, system_prompt, user_content_for_review, image_base64_list=image_list):
             yield chunk
 
     except Exception as e:
-        error_msg = f"\n\n[Reviewer运行出错]:{str(e)}"        
+        error_msg = f"\n\n[reviewer 运行出错]: {str(e)}"        
         print(error_msg)
         yield error_msg
 
-
-
-# 记得在文件头部确保导入： from typing import AsyncGenerator
 
 async def agent_architect(context: Dict) -> AsyncGenerator[str, None]:
     """
@@ -374,7 +432,7 @@ async def agent_architect(context: Dict) -> AsyncGenerator[str, None]:
     
     system_prompt = """
     【指令目标】
-    基于用户[旧档案]与[本周代码/文档]，执行宏观架构评估与技术成长判定。忽略具体语法错误，专注代码的可维护性、设计逻辑、技术上限与运行效率（重点）。
+    基于用户[旧档案]与[本周代码/文档]，执行宏观架构性能评估与技术成长判定。忽略具体语法错误，专注代码的可维护性、设计逻辑、技术上限与运行效率（重点）。
 
     【执行步骤】
     1. **架构分析**：提取代码的结构模式（如分层、模块化程度）。识别是否应用了特定设计模式（OOP、FP、单例、工厂等），是否优化了运行效率，评估架构性能。
@@ -382,14 +440,15 @@ async def agent_architect(context: Dict) -> AsyncGenerator[str, None]:
     - 判定状态：**突破**（应用了新概念/新技术）、**巩固**（熟练度提升）或 **停滞**（重复低水平劳动）。
     3. **技术栈提取**：罗列代码中使用的核心框架、第三方库或中间件。
     4. **综合定级**：根据代码的工程复杂度与设计美感或者运行效率，给出 S/A/B/C 评级。
-
+    5. **不足评估**：根据代码的工程架构找出性能与架构上的不足点，如可维护性、设计逻辑、技术上限与运行效率的不足点。
     【输出格式】
     严格遵循 Markdown 格式，仅输出以下四个板块：
 
-    - **🏗️ 架构或性能视点**：(简述代码结构、模块划分及运行效率)
-    - **📈 成长评估**：(明确指出与旧档案相比的进步点，判定本周状态)
+    - **🏗️ 架构运行效率**：(罗列代码结构，运行效率（重点，输出的主要内容）、模块划分及运行效率)
+    - **📈 成长评估**：(明确指出与旧档案相比的进步点，重点指出不足点，判定本周状态)
     - **🛠️ 技术栈侦测**：(列出检测到的关键技术/库)
     - **⚖️ 综合评级**：(给出 S/A/B/C 评分并简述理由)
+    - **🛠️ 扩展参考**：(了解架构不成熟的地方，推荐官方文档阅读或者开源项目)
     """
     user_content = f"【当前旧档案】:\n{old_profile}\n\n【本周原始代码堆】:\n{full_code_text} \n\n【本周文档内容】:\n{full_doc_text}"
 
@@ -418,7 +477,7 @@ async def agent_mentor(review_res: str, architect_res: str, user_note: str,conte
     2. **聚焦改进 (Focus Area)**：从审计报告中筛选出优先级高的 2-3 个问题（如严重安全漏洞、核心逻辑谬误或恶劣的编码习惯），作为本周整改重点。
     3. **全量纠错 (Error Analysis)**：综合审计员与架构师的发现，并结合你对原始代码的审查，罗列代码中存在的逻辑错误与技术误区。
     4. **答疑 (Q&A)**：若[学生心得]中包含具体技术困惑或提问，提供简明解答；若无提问，则跳过此步骤。
-    5. **规划下一步 (Next Step)**：针对本周暴露的短板，布置具体的专项训练题目或推荐一个核心学习关键词。
+    5. **规划下一步 (Next Step)**：针对本周暴露的短板，布置具体的专项训练题目或推荐学习内容（题目，或者官方文档），可以参考【代码审计报告】中的链接与知识点。
 
     【输出格式】
     严格遵循 Markdown 格式，语气专业且具有指导性，包含以下板块：
@@ -426,7 +485,7 @@ async def agent_mentor(review_res: str, architect_res: str, user_note: str,conte
     - ** 核心改进**
     - ** 错误清单** (指出所有具体错误，列出用户错误的代码与修正后的代码（根据情况提供多种解法）)(主要部分，要求输出长，尽量贴近输出上限)
     - ** 答疑解惑** (若无问题则省略)
-    - ** 自身强化** (给出用户下一周可以去学习的部分，比如去看...知识点，去刷...的题目)
+    - ** 自身强化** (给出用户下一周可以去学习的部分，比如去看...官方文档，去刷...的题目，给出链接（可以参考【代码审计报告】中的链接（报告中链接较新），也可以根据你的知识库）)
     """
 
     user_content = user_content = f"""
@@ -459,7 +518,7 @@ async def agent_mentor(review_res: str, architect_res: str, user_note: str,conte
 # async def run_weekly_analysis(uploaded_files, user_note, current_profile):
 
     
-def main():
+async def main():
     # 1. 必须最先执行配置
     st.set_page_config(page_title="AI Coding Mentor", layout="wide", page_icon="🧙‍♂️")
     
@@ -471,7 +530,7 @@ def main():
     </style>
     """, unsafe_allow_html=True)
 
-    # 3. 初始化 Session State (防止刷新丢失)
+
     if "analysis_result" not in st.session_state:
         st.session_state.analysis_result = None  
 
@@ -599,7 +658,7 @@ def main():
                             st.error(f"运行出错: {e}")
 
                     
-                    asyncio.run(run_async_logic())
+                    await run_async_logic()
 
         # --- 核心逻辑 B: 回填旧数据 (防止刷新白屏) ---
         elif st.session_state.analysis_result:
@@ -633,4 +692,4 @@ def main():
                 st.error(f"历史记录读取失败: {e}")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
