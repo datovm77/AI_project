@@ -1,7 +1,7 @@
 streamlit
 openai
-python-dotenv
+requests
 pdfplumber
 python-docx
-duckduckgo-search
-nest_asyncio
+python-dotenv
+pillow
