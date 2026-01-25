@@ -510,6 +510,85 @@ async def agent_mentor(review_res: str, architect_res: str, user_note: str,conte
         print(error_msg)
         yield error_msg
 
+async def agent_chat(user_query: str):
+    """
+    [Chat Agent - 随身导师]
+    处理多轮对话，自动识别当前是“场景A(带代码)”还是“场景B(纯闲聊)”。
+    """
+    # 1. 获取当前档案 (无论哪种场景都需要档案)
+    current_profile = "暂无档案"
+    if os.path.exists(PROFILE_PATH):
+        with open(PROFILE_PATH, "r", encoding="utf-8") as f:
+            current_profile = f.read()
+
+    # 2. 判断场景
+    context_data = st.session_state.current_context
+    analysis_res = st.session_state.analysis_result
+    
+    system_prompt = ""
+    user_context_block = ""
+
+    # === 场景 A: 刚刚结束分析，有代码和报告 ===
+    if context_data and analysis_res:
+        code_text = "\n".join(context_data.get('code', []))[:20000] # 截断防溢出
+        mentor_report = analysis_res.get('mentor', '')
+        
+        system_prompt = f"""
+        你是一位严厉但循循善诱的编程导师。你刚刚完成了对该学生代码的周报分析。
+        
+        【你的主要依据】
+        1. **学生档案**: {current_profile}
+        2. **刚刚分析的代码**: (见下文)
+        3. **你给出的周报**: (见下文)
+        
+        【回复策略】
+        - 既然你手里有代码，当学生提问时，**必须引用具体代码行数**来解释。
+        - 结合你刚才指出的错误清单进行回答。
+        - 保持多轮对话的连贯性，不要重复自我介绍。
+        """
+        
+        user_context_block = f"""
+        【当前代码上下文】:
+        {code_text}
+        
+        【你刚刚生成的周报】:
+        {mentor_report}
+        """
+
+    # === 场景 B: 刷新后/无代码，只有档案 ===
+    else:
+        system_prompt = f"""
+        你是一位编程导师。目前没有具体的代码上下文，但你了解这位学生的历史能力。
+        
+        【学生档案】: 
+        {current_profile}
+        
+        【回复策略】
+        - 回答关于编程、职业规划或技术概念的通用问题。
+        - 如果学生问具体的代码细节，请礼貌地告知需要先上传代码进行分析。
+        - 根据档案中的“当前弱点”提供针对性的建议。
+        """
+        
+        user_context_block = "【当前状态】: 无代码上下文，仅基于档案交流。"
+
+    # 3. 构建历史对话上下文 (为了让AI由记忆)
+    # 将最近15 轮对话拼接成文本传给 AI，模拟记忆
+    history_text = "\n".join([f"{m['role']}: {m['content']}" for m in st.session_state.chat_history[-15:]])
+    
+    final_user_content = f"""
+    {user_context_block}
+    
+    【历史对话回顾】:
+    {history_text}
+    
+    【学生当前提问】: 
+    {user_query}
+    """
+
+    model = MODEL_CONFIG["reviewer"]
+
+    async for chunk in call_ai_chat(model, system_prompt, final_user_content):
+        yield chunk
 
 # ==========================================
 # 4. 主工作流控制 (Workflow)
@@ -534,12 +613,22 @@ async def main():
     if "analysis_result" not in st.session_state:
         st.session_state.analysis_result = None  
 
+    #用于存储多轮对话历史(刷新后)
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+        
+    # 用于持久化存储解析后的代码和文档内容
+    if "current_context" not in st.session_state:
+        st.session_state.current_context = None
+
     # --- 侧边栏 ---
     with st.sidebar:
         st.header("🧙‍♂️ 个人档案")
         if os.path.exists(PROFILE_PATH):
             with open(PROFILE_PATH, "r", encoding="utf-8") as f:
-                st.info(f.read())
+                profile_content = f.read()
+                with st.expander("📜 点击查看完整档案", expanded=False):
+                    st.markdown(profile_content)
         else:
             st.warning("暂无档案，请先进行一次周报分析。")
 
@@ -555,8 +644,7 @@ async def main():
     st.caption("你的私人技术成长顾问团队")
 
     # 使用 Tabs 分离工作台与历史
-    tab_analysis, tab_history = st.tabs(["🚀 本周分析", "📜 历史档案"])
-
+    tab_analysis, tab_chat, tab_history = st.tabs(["🚀 本周分析", "💬 导师对话", "📜 历史档案"])
     # ==========================
     # Tab 1: 分析工作台
     # ==========================
@@ -601,7 +689,8 @@ async def main():
                             # 1. Librarian
                             st.write("Librarian: 正在整理文件并更新档案...")
                             context, _ = await agent_librarian(uploaded_files)
-                            await agent_librarian_write(context['code']) # 后台更新档案
+                            st.session_state.current_context = context
+                            await agent_librarian_write(context['code']) 
 
                             # 2. Reviewer & Architect 并行
                             st.write("Reviewer & Architect: 正在分析代码...")
@@ -668,7 +757,7 @@ async def main():
             mentor_placeholder.markdown(res["mentor"])
 
     # ==========================
-    # Tab 2: 历史档案
+    # 历史档案
     # ==========================
     with tab_history:
         if not os.path.exists(HISTORY_PATH):
@@ -690,6 +779,49 @@ async def main():
                         with t3: st.markdown(item.get('arch', ''))
             except Exception as e:
                 st.error(f"历史记录读取失败: {e}")
+    # ==========================
+    # 导师对话
+    # ==========================
+    with tab_chat:
+        # 1. 顶部状态提示 (可选，放在最上面)
+        if st.session_state.current_context:
+            st.success("🧠 已连接代码大脑：AI 已读取你刚刚提交的代码和报错，可直接提问。")
+        else:
+            st.info("💬 闲聊模式：AI 仅了解你的历史档案，无当前代码数据。")
+
+        # 2. 【核心修改】先渲染历史记录
+        # 这样历史记录会占据页面的上方空间
+        for msg in st.session_state.chat_history:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+
+        # 3. 【核心修改】输入框逻辑放在最后
+        # st.chat_input 会自动“钉”在屏幕最下方，无论上面有多少内容
+        if prompt := st.chat_input("向导师提问 (例如：这行代码为什么报错？)"):
+            
+            # A. 用户提问立即显示 (追加在历史记录下方)
+            with st.chat_message("user"):
+                st.markdown(prompt)
+            # 更新历史数据
+            st.session_state.chat_history.append({"role": "user", "content": prompt})
+
+            # B. AI 回复 (流式显示)
+            with st.chat_message("assistant"):
+                response_placeholder = st.empty()
+                full_response = ""
+                
+                # 调用 agent_chat 生成回复
+                async def stream_chat():
+                    nonlocal full_response
+                    async for chunk in agent_chat(prompt):
+                        full_response += chunk
+                        response_placeholder.markdown(full_response + "▌")
+                    response_placeholder.markdown(full_response)
+                
+                await stream_chat()
+            
+            # C. 保存 AI 回复到历史
+            st.session_state.chat_history.append({"role": "assistant", "content": full_response})
 
 if __name__ == "__main__":
     asyncio.run(main())
