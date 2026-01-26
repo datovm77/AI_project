@@ -262,7 +262,7 @@ def search_for_keyword(query:str):
         "q": query,
         "gl": "cn",
         "hl": "zh-cn",
-        "num": 3  # 搜索结果数量
+        "num": 3 
     })
     
     headers = {

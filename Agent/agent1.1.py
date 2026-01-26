@@ -14,6 +14,8 @@ try:
 except ImportError:
     st.error("找不到 search_service.py，请确保该文件在同一目录下。")
 
+
+
 # streamlit run agent1.1.py
 # ==========================================
 # 1. ⚙️ 配置与初始化
@@ -192,7 +194,7 @@ async def call_ai_chat(model: str, system_prompt: str, user_content: str, image_
 
 # --- Phase 1: 预处理 ---
 
-async def agent_librarian(uploaded_files) -> Dict[str, Any]:
+async def agent_librarian(uploaded_files) -> Tuple[Dict[str, Any], str]:
     """
     [Librarian - 档案管理员]
     职责：清洗数据，分类整理，不进行深度分析。
@@ -789,14 +791,10 @@ async def main():
         else:
             st.info("💬 闲聊模式：AI 仅了解你的历史档案，无当前代码数据。")
 
-        # 2. 【核心修改】先渲染历史记录
-        # 这样历史记录会占据页面的上方空间
         for msg in st.session_state.chat_history:
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
 
-        # 3. 【核心修改】输入框逻辑放在最后
-        # st.chat_input 会自动“钉”在屏幕最下方，无论上面有多少内容
         if prompt := st.chat_input("向导师提问 (例如：这行代码为什么报错？)"):
             
             # A. 用户提问立即显示 (追加在历史记录下方)
