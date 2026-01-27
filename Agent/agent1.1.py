@@ -14,7 +14,21 @@ try:
 except ImportError:
     st.error("找不到 search_service.py，请确保该文件在同一目录下。")
 
+import os
 
+# 云端文件系统隔离处理：如果检测到是Streamlit Cloud环境，使用当前目录存储
+# Streamlit Cloud会分配临时空间，虽然重启会丢，但至少演示时能用
+PROFILE_PATH = os.path.join(os.path.dirname(__file__), "profile.txt")
+HISTORY_PATH = os.path.join(os.path.dirname(__file__), "history.json")
+
+# 如果文件不存在，创建空文件避免报错（演示用）
+if not os.path.exists(PROFILE_PATH):
+    with open(PROFILE_PATH, 'w', encoding='utf-8') as f:
+        f.write("【新用户】暂无历史档案。初始评级：未定。")
+        
+if not os.path.exists(HISTORY_PATH):
+    with open(HISTORY_PATH, 'w', encoding='utf-8') as f:
+        json.dump([], f)
 
 # streamlit run agent1.1.py
 # ==========================================
