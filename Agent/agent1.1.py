@@ -671,7 +671,7 @@ async def main():
     st.title("AI Coding Mentor")
     st.caption("你的私人技术成长顾问团队")
 
-    # 使用 Tabs 分离工作台与历史
+
     tab_analysis, tab_chat, tab_history = st.tabs(["🚀 本周分析", "💬 导师对话", "📜 历史档案"])
     # ==========================
     # Tab 1: 分析工作台
@@ -683,13 +683,12 @@ async def main():
         with col_note:
             user_note = st.text_area("2. 本周心得", height=100, placeholder="例如：这周主要学习了...")
 
-        # 【修改点 1】在这里创建一个空的容器占位符，位置在按钮上方
+
         status_placeholder = st.empty()
 
         start_btn = st.button("启动周报分析", type="primary", use_container_width=True)
         st.divider()
 
-        # 预先定义布局容器（防止UI跳动）
         st.subheader("第一阶段：深度技术评估")
         col_review, col_arch = st.columns(2)
         with col_review:
@@ -707,12 +706,10 @@ async def main():
         mentor_box = st.container(border=True)
         mentor_placeholder = mentor_box.empty()
 
-        # --- 核心逻辑 A: 点击运行 ---
         if start_btn:
             if not uploaded_files:
                 st.error("⚠️ 请先上传文件！")
             else:
-                # 【修改点 2】指定在这个占位符容器内渲染 st.status
                 with status_placeholder:
                     # 使用 st.status 显示进度状态
                     with st.status("🔥 AI 团队正在并行工作中...", expanded=True) as status:
@@ -782,7 +779,6 @@ async def main():
                         
                         await run_async_logic()
 
-        # --- 核心逻辑 B: 回填旧数据 (防止刷新白屏) ---
         elif st.session_state.analysis_result:
             res = st.session_state.analysis_result
             review_placeholder.markdown(res["review"])
@@ -816,7 +812,7 @@ async def main():
     # 导师对话
     # ==========================
     with tab_chat:
-        # 1. 顶部状态提示 (可选，放在最上面)
+        # 1. 顶部状态提示 
         if st.session_state.current_context:
             st.success("🧠 已连接代码大脑：AI 已读取你刚刚提交的代码和报错，可直接提问。")
         else:
