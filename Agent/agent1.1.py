@@ -246,17 +246,43 @@ async def agent_librarian_write(code_list: List[str]) -> str:
 
     system_prompt = """
     【任务指令】
-    根据提供的[旧档案]与[本周原始代码]，全量生成一份[更新后的技术档案]。
+    执行技术档案的增量更新任务。基于输入的[旧档案]与[本周原始代码]，输出一份**证据导向**、层级分明的最新技术档案。
 
-    【处理逻辑】
-    1. **技能提取 (基于事实)**：扫描代码中实际使用的库 (Libraries)、框架、语法特性及设计模式。若发现新技能，将其合并不重复地加入技能树。
-    2. **质量画像更新**：分析代码的工程质量（注释规范、命名风格、模块化程度、硬编码情况）。据此客观修正“代码风格”与“当前弱点”字段。
-    3. **动态评级**：依据本周代码的逻辑复杂度与健壮性，动态调整综合技术评级 (S/A/B/C)。
-    4. **录入删减规则**：不得随意删减旧档案内容。档案的内容重复时，根据情况可以对档案做出适当修改。
-    【输出约束】
-    1. 格式必须为 Markdown。
-    2. **严禁输出**任何开场白、解释语或结束语。
-    3. **直接输出**完整的档案内容。
+    【核心原则】
+    1. **拒绝空洞 (No Vague Terms)**：**严禁**使用“掌握”、“熟练”、“了解”等主观形容词。必须用“**动作+结果**”的形式描述。
+    2. **证据强制 (Evidence-Based)**：每一项技术能力**必须**附带简短的例子（代码中的具体应用场景、函数名或解决的问题）作为佐证。
+    3. **增量保留**：保留[旧档案]所有条目。仅在有新证据时追加内容，**严禁删除**历史记录。
+
+    【输出格式规范】
+    档案必须按以下 Markdown 层级结构组织：
+
+    # I. [技术栈大类](例如：Python、前端技术、DevOps、C/C++算法、Java)
+    ## [序号].[子序号] [具体领域/库]
+    - [动词+技术点]：[简短的代码证据/应用场景]
+    - [动词+技术点]：[简短的代码证据/应用场景]
+
+    *❌ 错误写法：*
+    - 熟练使用 Python 异步编程
+    - 掌握 Streamlit
+
+    *✅ 正确写法示例：*
+    # I. Python
+    ## 1.1 并发与异步 IO
+    - **实现并发任务调度**：在 `agent_reviewer` 模块中使用 `asyncio.gather` 并行执行搜索任务，提升响应速度。
+    - **优化内存占用**：利用 `yield` 生成器构建流式数据处理管道，避免一次性加载大文件。
+
+    # II. Web 全栈
+    ## 2.1 Streamlit 框架
+    - **构建状态管理机制**：使用 `st.session_state` 跨页面/跨刷新持久化存储用户对话历史。
+    - **开发自定义组件**：封装 `parse_uploaded_file` 函数工厂，统一处理 PDF/Docx/Code 多格式文件解析。
+
+    # III. C/C++算法
+    ## 3.1 .....
+
+    【执行步骤】
+    1. **证据提取**：扫描代码，识别技术点，并立刻找到它在代码中“具体解决了什么问题”或“具体实现在哪里”。
+    2. **动作化描述**：将“使用了 X 库”转化为“利用 X 库实现了 Y 功能”。
+    3. **增量写入**：将新发现的能力条目追加到对应分类下，输出完整的档案。
     """
     
     user_content = f"【当前旧档案】:\n{old_profile}\n\n【本周原始代码堆 (Raw Code Data)】:\n{raw_code_content}"
@@ -657,6 +683,9 @@ async def main():
         with col_note:
             user_note = st.text_area("2. 本周心得", height=100, placeholder="例如：这周主要学习了...")
 
+        # 【修改点 1】在这里创建一个空的容器占位符，位置在按钮上方
+        status_placeholder = st.empty()
+
         start_btn = st.button("启动周报分析", type="primary", use_container_width=True)
         st.divider()
 
@@ -683,73 +712,75 @@ async def main():
             if not uploaded_files:
                 st.error("⚠️ 请先上传文件！")
             else:
-                # 使用 st.status 显示进度状态
-                with st.status("🔥 AI 团队正在并行工作中...", expanded=True) as status:
-                    
-                    async def run_async_logic():
-                        try:
-                            # 1. Librarian
-                            st.write("Librarian: 正在整理文件并更新档案...")
-                            context, _ = await agent_librarian(uploaded_files)
-                            st.session_state.current_context = context
-                            await agent_librarian_write(context['code']) 
+                # 【修改点 2】指定在这个占位符容器内渲染 st.status
+                with status_placeholder:
+                    # 使用 st.status 显示进度状态
+                    with st.status("🔥 AI 团队正在并行工作中...", expanded=True) as status:
+                        
+                        async def run_async_logic():
+                            try:
+                                # 1. Librarian
+                                st.write("Librarian: 正在整理文件并更新档案...")
+                                context, _ = await agent_librarian(uploaded_files)
+                                st.session_state.current_context = context
+                                await agent_librarian_write(context['code']) 
 
-                            # 2. Reviewer & Architect 并行
-                            st.write("Reviewer & Architect: 正在分析代码...")
-                            
-                            # 临时存储结果用于显示
-                            results = {"review": "", "arch": "", "mentor": ""}
+                                # 2. Reviewer & Architect 并行
+                                st.write("Reviewer & Architect: 正在分析代码...")
+                                
+                                # 临时存储结果用于显示
+                                results = {"review": "", "arch": "", "mentor": ""}
 
-                            # 定义流式回调
-                            async def stream_review():
-                                async for chunk in agent_reviewer(context):
-                                    results["review"] += chunk
-                                    review_placeholder.markdown(results["review"] + "▌")
-                                review_placeholder.markdown(results["review"])
+                                # 定义流式回调
+                                async def stream_review():
+                                    async for chunk in agent_reviewer(context):
+                                        results["review"] += chunk
+                                        review_placeholder.markdown(results["review"] + "▌")
+                                    review_placeholder.markdown(results["review"])
 
-                            async def stream_arch():
-                                async for chunk in agent_architect(context):
-                                    results["arch"] += chunk
-                                    arch_placeholder.markdown(results["arch"] + "▌")
-                                arch_placeholder.markdown(results["arch"])
+                                async def stream_arch():
+                                    async for chunk in agent_architect(context):
+                                        results["arch"] += chunk
+                                        arch_placeholder.markdown(results["arch"] + "▌")
+                                    arch_placeholder.markdown(results["arch"])
 
-                            await asyncio.gather(stream_review(), stream_arch())
+                                await asyncio.gather(stream_review(), stream_arch())
 
-                            # 3. Mentor
-                            st.write("Mentor: 正在撰写周报...")
-                            async for chunk in agent_mentor(results["review"], results["arch"], user_note, context):
-                                results["mentor"] += chunk
-                                mentor_placeholder.markdown(results["mentor"] + "▌")
-                            mentor_placeholder.markdown(results["mentor"])
+                                # 3. Mentor
+                                st.write("Mentor: 正在撰写周报...")
+                                async for chunk in agent_mentor(results["review"], results["arch"], user_note, context):
+                                    results["mentor"] += chunk
+                                    mentor_placeholder.markdown(results["mentor"] + "▌")
+                                mentor_placeholder.markdown(results["mentor"])
 
-                            # 4. 保存状态与文件
-                            st.session_state.analysis_result = results
-                            
-                            new_record = {
-                                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                "note": user_note,
-                                **results 
-                            }
-                            
-                            history = []
-                            if os.path.exists(HISTORY_PATH):
-                                try:
-                                    with open(HISTORY_PATH, "r", encoding="utf-8") as f:
-                                        history = json.load(f)
-                                except: pass
-                            
-                            history.append(new_record)
-                            with open(HISTORY_PATH, "w", encoding="utf-8") as f:
-                                json.dump(history, f, ensure_ascii=False, indent=2)
+                                # 4. 保存状态与文件
+                                st.session_state.analysis_result = results
+                                
+                                new_record = {
+                                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                    "note": user_note,
+                                    **results 
+                                }
+                                
+                                history = []
+                                if os.path.exists(HISTORY_PATH):
+                                    try:
+                                        with open(HISTORY_PATH, "r", encoding="utf-8") as f:
+                                            history = json.load(f)
+                                    except: pass
+                                
+                                history.append(new_record)
+                                with open(HISTORY_PATH, "w", encoding="utf-8") as f:
+                                    json.dump(history, f, ensure_ascii=False, indent=2)
 
-                            status.update(label="✅ 分析完成！已归档", state="complete", expanded=False)
-                            st.balloons()
-                            
-                        except Exception as e:
-                            st.error(f"运行出错: {e}")
+                                status.update(label="✅ 分析完成！已归档", state="complete", expanded=False)
+                                st.balloons()
+                                
+                            except Exception as e:
+                                st.error(f"运行出错: {e}")
 
-                    
-                    await run_async_logic()
+                        
+                        await run_async_logic()
 
         # --- 核心逻辑 B: 回填旧数据 (防止刷新白屏) ---
         elif st.session_state.analysis_result:
