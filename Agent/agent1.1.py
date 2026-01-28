@@ -30,12 +30,15 @@ if not os.path.exists(HISTORY_PATH):
     with open(HISTORY_PATH, 'w', encoding='utf-8') as f:
         json.dump([], f)
 
+
+
 # streamlit run agent1.1.py
+
 # ==========================================
 # 1. ⚙️ 配置与初始化
 # ==========================================
 load_dotenv()  #导入secrets
-# nest_asyncio.apply()  # 允许嵌套事件循环
+
 
 PROFILE_PATH = "profile.txt"
 HISTORY_PATH = "history.json"
